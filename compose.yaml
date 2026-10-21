@@ -1,0 +1,16 @@
+services:
+  rehearsal:
+    build: .
+    ports:
+      - '127.0.0.1:4173:4173'
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4173
+      REHEARSAL_DB: /app/data/rehearsal.sqlite
+    volumes:
+      - rehearsal-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  rehearsal-data:
