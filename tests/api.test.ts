@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { get } from 'node:http';
 import { RehearsalEngine } from '../server/engine.js';
 import { createApp } from '../server/app.js';
-import type { Run } from '../shared/types.js';
+import { SCENARIO_IDS, type Run, type Scenario } from '../shared/types.js';
 
 async function fixture(t: TestContext) {
   const engine = new RehearsalEngine(':memory:');
@@ -39,8 +39,13 @@ async function fixture(t: TestContext) {
 
 test('HTTP comparison persists separate runs and evaluates the real write results', async (t) => {
   const { base, post, done } = await fixture(t);
-  const scenarios = await (await fetch(base + '/api/scenarios')).json();
-  assert.equal(scenarios.length, 4);
+  const scenarios: Scenario[] = await (
+    await fetch(base + '/api/scenarios')
+  ).json();
+  assert.deepEqual(
+    scenarios.map((scenario) => scenario.id),
+    [...SCENARIO_IDS],
+  );
   const response = await post('/api/compare', {
     scenarioId: 'timeout-after-write',
   });
@@ -62,6 +67,37 @@ test('HTTP comparison persists separate runs and evaluates the real write result
   );
   const history = await (await fetch(base + '/api/runs')).json();
   assert.equal(history.length, 2);
+});
+
+test('HTTP booking-race comparison exposes the competing booking and recovered outcome', async (t) => {
+  const { post, done } = await fixture(t);
+  const response = await post('/api/compare', { scenarioId: 'slot-race' });
+  assert.equal(response.status, 201);
+  const comparison = await response.json();
+  const [naive, careful] = await Promise.all([
+    done(comparison.naive.id),
+    done(comparison.careful.id),
+  ]);
+  assert.equal(naive.outcome, 'failed');
+  assert.equal(careful.outcome, 'passed');
+  assert.equal(
+    naive.events.filter((event) => event.source === 'agent').length,
+    0,
+  );
+  for (const run of [naive, careful]) {
+    assert.equal(
+      run.events.filter((event) => event.source === 'concurrent').length,
+      1,
+    );
+    const injected = run.steps.filter((step) => step.faultInjected);
+    assert.equal(injected.length, 1);
+    assert.equal(injected[0].output.error?.code, 'CONFLICT');
+    assert.match(injected[0].sideEffect ?? '', /booking/i);
+  }
+  assert.equal(
+    careful.events.find((event) => event.source === 'agent')?.start,
+    '2026-10-22T14:30:00.000Z',
+  );
 });
 
 test('HTTP rejects invalid inputs, unknown routes, and unknown runs', async (t) => {

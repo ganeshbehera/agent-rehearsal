@@ -1,5 +1,11 @@
-export type ScenarioId =
-  'clean' | 'timeout-after-write' | 'permission-denied' | 'slot-conflict';
+export const SCENARIO_IDS = [
+  'clean',
+  'timeout-after-write',
+  'permission-denied',
+  'slot-conflict',
+  'slot-race',
+] as const;
+export type ScenarioId = (typeof SCENARIO_IDS)[number];
 export type Policy = 'naive' | 'careful' | 'external';
 export type ToolName = 'calendar_list_events' | 'calendar_create_event';
 
@@ -9,7 +15,7 @@ export interface CalendarEvent {
   start: string;
   end: string;
   attendees: string[];
-  source: 'seed' | 'agent';
+  source: 'seed' | 'agent' | 'concurrent';
   idempotencyKey?: string;
 }
 

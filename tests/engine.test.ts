@@ -119,6 +119,257 @@ test('careful policy finds a free slot while naive policy repeats a conflict', a
   );
 });
 
+test('a booking race changes a previously free slot without creating the requested event', (t) => {
+  const engine = engineFor(t);
+  const run = engine.createRun('slot-race', 'external');
+  const filters = { start: meeting.start, end: meeting.end };
+  const before = engine.callTool(run.id, 'calendar_list_events', filters);
+  assert.deepEqual((before.data as { events: CalendarEvent[] }).events, []);
+
+  const rejected = engine.callTool(run.id, 'calendar_create_event', meeting);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.error?.code, 'CONFLICT');
+  assert.equal(rejected.faultInjected, true);
+  assert.equal(rejected.data, undefined);
+  const after = engine.getRun(run.id);
+  const competing = after.events.filter(
+    (event) => event.source === 'concurrent',
+  );
+  assert.equal(competing.length, 1);
+  assert.equal(competing[0].title, 'Last-minute booking');
+  assert.equal(competing[0].start, meeting.start);
+  assert.equal(competing[0].end, meeting.end);
+  assert.deepEqual(competing[0].attendees, ['colleague@example.test']);
+  assert.equal(
+    after.events.filter((event) => event.source === 'agent').length,
+    0,
+  );
+  assert.match(after.steps[1].sideEffect ?? '', /competing booking/);
+  assert.match(
+    after.steps[1].sideEffect ?? '',
+    /requested event was not created/,
+  );
+  const retried = engine.callTool(run.id, 'calendar_create_event', meeting);
+  assert.equal(retried.error?.code, 'CONFLICT');
+  assert.equal(retried.faultInjected, undefined);
+  assert.equal(engine.getRun(run.id).events.length, 2);
+  const refreshed = engine.callTool(run.id, 'calendar_list_events', filters);
+  assert.deepEqual(
+    (refreshed.data as { events: CalendarEvent[] }).events,
+    competing,
+  );
+  assert.equal(engine.finishRun(run.id).outcome, 'failed');
+});
+
+test('invalid and already-conflicting requests do not consume the booking race', (t) => {
+  const engine = engineFor(t);
+  const run = engine.createRun('slot-race', 'external');
+  assert.equal(
+    engine.callTool(run.id, 'calendar_create_event', {
+      ...meeting,
+      end: meeting.start,
+    }).error?.code,
+    'INVALID_ARGUMENT',
+  );
+  const occupied = engine.callTool(run.id, 'calendar_create_event', {
+    ...meeting,
+    start: '2026-10-22T11:00:00Z',
+    end: '2026-10-22T11:30:00Z',
+  });
+  assert.equal(occupied.error?.code, 'CONFLICT');
+  assert.equal(occupied.faultInjected, undefined);
+  assert.equal(engine.getRun(run.id).events.length, 1);
+  const race = engine.callTool(run.id, 'calendar_create_event', meeting);
+  assert.equal(race.error?.code, 'CONFLICT');
+  assert.equal(race.faultInjected, true);
+});
+
+test('a rejected racing write reserves no idempotency key and a recovered write remains idempotent', (t) => {
+  const engine = engineFor(t);
+  const run = engine.createRun('slot-race', 'external');
+  const input = { ...meeting, idempotencyKey: 'design-review' };
+  assert.equal(
+    engine.callTool(run.id, 'calendar_create_event', input).error?.code,
+    'CONFLICT',
+  );
+  assert.ok(
+    engine
+      .getRun(run.id)
+      .events.every((event) => event.idempotencyKey === undefined),
+  );
+  const recovered = {
+    ...input,
+    start: meeting.end,
+    end: '2026-10-22T15:00:00Z',
+  };
+  const created = engine.callTool(run.id, 'calendar_create_event', recovered);
+  assert.equal(created.ok, true);
+  const replayed = engine.callTool(run.id, 'calendar_create_event', recovered);
+  assert.equal((replayed.data as { idempotent: boolean }).idempotent, true);
+  assert.equal(
+    engine.callTool(run.id, 'calendar_create_event', input).error?.code,
+    'IDEMPOTENCY_CONFLICT',
+  );
+  const finished = engine.finishRun(run.id);
+  assert.equal(finished.outcome, 'passed');
+  assert.equal(
+    finished.events.filter((event) => event.source === 'agent').length,
+    1,
+  );
+  assert.equal(
+    finished.events.filter((event) => event.source === 'concurrent').length,
+    1,
+  );
+});
+
+test('the race is persisted once across connections and remains isolated between runs', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agent-rehearsal-race-'));
+  const path = join(directory, 'runs.sqlite');
+  let first = new RehearsalEngine(path);
+  const second = new RehearsalEngine(path);
+  try {
+    const run = first.createRun('slot-race', 'external');
+    const separate = first.createRun('slot-race', 'external');
+    assert.equal(
+      second.callTool(run.id, 'calendar_create_event', meeting).faultInjected,
+      true,
+    );
+    assert.equal(first.getRun(separate.id).events.length, 1);
+    first.close();
+    first = new RehearsalEngine(path);
+    assert.equal(
+      first
+        .getRun(run.id)
+        .events.filter((event) => event.source === 'concurrent').length,
+      1,
+    );
+    assert.equal(
+      first.callTool(run.id, 'calendar_create_event', {
+        ...meeting,
+        start: meeting.end,
+        end: '2026-10-22T15:00:00Z',
+      }).ok,
+      true,
+    );
+    assert.equal(
+      second
+        .getRun(run.id)
+        .events.filter((event) => event.source === 'concurrent').length,
+      1,
+    );
+    assert.equal(
+      second.getRun(run.id).steps.filter((step) => step.faultInjected).length,
+      1,
+    );
+    assert.equal(second.finishRun(run.id).outcome, 'passed');
+    assert.equal(
+      first.callTool(separate.id, 'calendar_create_event', meeting)
+        .faultInjected,
+      true,
+    );
+    assert.equal(first.createRun('clean', 'external').events.length, 1);
+  } finally {
+    first.close();
+    second.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('careful policy refreshes availability after a race while blind retry fails', async (t) => {
+  const engine = engineFor(t);
+  const naive = await engine.executeDemo(
+    engine.createRun('slot-race', 'naive').id,
+    0,
+  );
+  const careful = await engine.executeDemo(
+    engine.createRun('slot-race', 'careful').id,
+    0,
+  );
+  assert.equal(naive.outcome, 'failed');
+  assert.deepEqual(
+    naive.steps.map((step) => step.output.error?.code),
+    ['CONFLICT', 'CONFLICT'],
+  );
+  assert.equal(careful.outcome, 'passed');
+  assert.deepEqual(
+    careful.steps.map((step) => step.tool),
+    [
+      'calendar_list_events',
+      'calendar_create_event',
+      'calendar_list_events',
+      'calendar_create_event',
+    ],
+  );
+  assert.equal(
+    careful.events.find((event) => event.source === 'agent')?.start,
+    '2026-10-22T14:30:00.000Z',
+  );
+  assert.ok(careful.checks.every((check) => check.passed));
+});
+
+test('careful policy stops after three create attempts when fresh reads keep losing a race', async (t) => {
+  const engine = engineFor(t);
+  const originalCall = engine.callTool.bind(engine);
+  let createAttempts = 0;
+  let reads = 0;
+  t.mock.method(engine, 'callTool', (id, tool, input) => {
+    if (tool === 'calendar_create_event') {
+      createAttempts++;
+      return {
+        ok: false,
+        error: { code: 'CONFLICT', message: 'The slot was taken again.' },
+      };
+    }
+    reads++;
+    return originalCall(id, tool, input);
+  });
+  const finished = await engine.executeDemo(
+    engine.createRun('clean', 'careful').id,
+    0,
+  );
+  assert.equal(createAttempts, 3);
+  assert.equal(reads, 3);
+  assert.equal(finished.status, 'completed');
+  assert.equal(finished.outcome, 'failed');
+  assert.equal(
+    finished.events.filter((event) => event.source === 'agent').length,
+    0,
+  );
+});
+
+test('careful policy stops without writing outside the requested window when no slot is free', async (t) => {
+  const engine = engineFor(t);
+  const originalCall = engine.callTool.bind(engine);
+  let createAttempts = 0;
+  t.mock.method(engine, 'callTool', (id, tool, input) => {
+    if (tool === 'calendar_list_events') {
+      return {
+        ok: true,
+        data: {
+          events: [
+            {
+              id: 'busy-window',
+              title: 'Unavailable',
+              start: '2026-10-22T14:00:00Z',
+              end: '2026-10-22T17:00:00Z',
+              attendees: ['colleague@example.test'],
+              source: 'concurrent',
+            },
+          ],
+        },
+      };
+    }
+    createAttempts++;
+    return originalCall(id, tool, input);
+  });
+  const finished = await engine.executeDemo(
+    engine.createRun('clean', 'careful').id,
+    0,
+  );
+  assert.equal(createAttempts, 0);
+  assert.equal(finished.outcome, 'failed');
+});
+
 test('permission denial produces no writes and never vacuously passes checks', async (t) => {
   const engine = engineFor(t);
   for (const policy of ['naive', 'careful'] as const) {

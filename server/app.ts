@@ -4,13 +4,9 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { RehearsalEngine } from './engine.js';
 import { projectRoot, dbPath as defaultDbPath } from './config.js';
+import { SCENARIO_IDS } from '../shared/types.js';
 
-export const scenarioIdSchema = z.enum([
-  'clean',
-  'timeout-after-write',
-  'permission-denied',
-  'slot-conflict',
-]);
+export const scenarioIdSchema = z.enum(SCENARIO_IDS);
 const policySchema = z.enum(['naive', 'careful', 'external']);
 const runSchema = z
   .object({

@@ -5,6 +5,7 @@ import {
   ArrowRight,
   ArrowUpRight,
   Braces,
+  CalendarClock,
   CalendarDays,
   Check,
   CheckCheck,
@@ -50,6 +51,11 @@ const policyNames: Record<Policy, string> = {
   naive: 'Blind retry',
   careful: 'Verify before retry',
   external: 'External agent',
+};
+const eventSourceNames: Record<CalendarEvent['source'], string> = {
+  seed: 'Initial event',
+  agent: 'Agent-created',
+  concurrent: 'Concurrent booking',
 };
 const panel = 'rounded-xl border border-zinc-800 bg-zinc-900/40';
 const secondaryButton =
@@ -417,7 +423,7 @@ export default function App() {
                       CALENDAR ENVIRONMENT
                     </span>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                     {scenarios.map((scenario, index) => (
                       <ScenarioCard
                         key={scenario.id}
@@ -487,8 +493,12 @@ export default function App() {
                       </div>
                       <div className="mt-4 flex items-start gap-1.5 border-t border-zinc-800 pt-3 text-[11px] leading-relaxed text-zinc-400">
                         <Code2 size={13} className="mt-0.5 shrink-0" />
-                        Demo policies are scripted examples. Connect an external
-                        AI agent through MCP to test its behavior.
+                        <span>
+                          Demo policies are scripted examples. Verify before
+                          retry checks calendar state after a timeout and
+                          replans when a slot is taken. Connect an external AI
+                          agent through MCP to test its behavior.
+                        </span>
                       </div>
                     </div>
                   )}
@@ -677,8 +687,8 @@ function PageHeading({
 function LoadingState() {
   return (
     <div role="status" aria-label="Loading scenarios" className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {[1, 2, 3, 4].map((i) => (
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {[1, 2, 3, 4, 5].map((i) => (
           <div
             key={i}
             className="h-40 rounded-xl border border-zinc-800 bg-zinc-900"
@@ -710,7 +720,9 @@ function ScenarioCard({
         ? Zap
         : scenario.id === 'permission-denied'
           ? Unplug
-          : CalendarDays;
+          : scenario.id === 'slot-race'
+            ? CalendarClock
+            : CalendarDays;
   return (
     <button
       aria-pressed={selected}
@@ -1024,6 +1036,9 @@ function Calendar({
 }) {
   const hours = [10, 11, 12, 13, 14, 15, 16, 17];
   const created = events.filter((event) => event.source === 'agent').length;
+  const hasConcurrentBooking = events.some(
+    (event) => event.source === 'concurrent',
+  );
   const visibleEvents = events.filter(
     (event) =>
       event.start.startsWith('2026-10-22') &&
@@ -1088,9 +1103,11 @@ function Calendar({
                           'border-l-2 px-2 py-1.5',
                           event.source === 'seed'
                             ? 'border-zinc-600 bg-zinc-800/60 text-zinc-400'
-                            : duplicate
-                              ? 'border-rose-300 bg-rose-300/10 text-rose-200'
-                              : 'border-lime-300 bg-lime-300/10 text-lime-200',
+                            : event.source === 'concurrent'
+                              ? 'border-amber-300 bg-amber-300/10 text-amber-200'
+                              : duplicate
+                                ? 'border-rose-300 bg-rose-300/10 text-rose-200'
+                                : 'border-lime-300 bg-lime-300/10 text-lime-200',
                         )}
                       >
                         <div className="flex items-start justify-between gap-1">
@@ -1103,9 +1120,10 @@ function Calendar({
                             </span>
                           )}
                         </div>
-                        <div className="mt-0.5 font-mono text-[9px] tabular-nums opacity-65">
+                        <div className="mt-0.5 font-mono text-[9px] tabular-nums">
                           {time(event.start)}–{time(event.end)}
-                          {event.source === 'agent' && ' · agent'}
+                          {' · '}
+                          {eventSourceNames[event.source]}
                         </div>
                       </div>
                     );
@@ -1132,6 +1150,9 @@ function Calendar({
                   <span className="break-all font-mono text-[10px]">
                     {event.start} → {event.end}
                   </span>
+                  <span className="block text-[10px]">
+                    {eventSourceNames[event.source]}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -1139,20 +1160,30 @@ function Calendar({
         )}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800 px-5 py-3">
-        <div className="flex items-center gap-3 text-[10px] text-zinc-400">
+        <div className="flex flex-wrap items-center gap-3 text-[10px] text-zinc-400">
           <span className="flex items-center gap-1.5">
             <span className="size-1.5 rounded-sm bg-zinc-500" />
-            Existing
+            Initial
           </span>
           <span className="flex items-center gap-1.5">
             <span className="size-1.5 rounded-sm bg-lime-300" />
             Agent-created
           </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-1.5 rounded-sm bg-amber-300" />
+            Concurrent
+          </span>
         </div>
         <span className="font-mono text-[10px] tabular-nums text-zinc-400">
-          {created} NEW
+          {created} AGENT-CREATED
         </span>
       </div>
+      {hasConcurrentBooking && (
+        <p className="border-t border-zinc-800 px-5 py-3 text-[11px] leading-relaxed text-zinc-400">
+          A concurrent booking was added by the simulated environment during
+          this run.
+        </p>
+      )}
     </section>
   );
 }

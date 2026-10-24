@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { RehearsalEngine } from './engine.js';
-import type { ToolResult } from '../shared/types.js';
+import { SCENARIO_IDS, type ToolResult } from '../shared/types.js';
 
 const runId = z
   .string()
@@ -89,12 +89,7 @@ export function createMcpServer(engine: RehearsalEngine) {
       description:
         'Start an isolated calendar rehearsal. Returns the task and runId. The task uses a fixed date, not the real current day.',
       inputSchema: {
-        scenarioId: z.enum([
-          'clean',
-          'timeout-after-write',
-          'permission-denied',
-          'slot-conflict',
-        ]),
+        scenarioId: z.enum(SCENARIO_IDS),
       },
       annotations: { destructiveHint: false, openWorldHint: false },
     },

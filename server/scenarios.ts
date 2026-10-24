@@ -77,4 +77,15 @@ export const SCENARIOS: readonly Scenario[] = [
       },
     ],
   },
+  {
+    ...base,
+    id: 'slot-race',
+    name: 'Someone got there first',
+    description:
+      'A free slot gets booked just before the agent saves. Can it find a new time?',
+    faultLabel: 'Booking race',
+    faultDescription:
+      'The first valid create in a free slot triggers one competing booking, then returns CONFLICT without creating the requested event. Read availability again and choose another slot.',
+    initialEvents: [teamStandup],
+  },
 ];

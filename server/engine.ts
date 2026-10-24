@@ -347,6 +347,30 @@ export class RehearsalEngine {
               'The requested time overlaps an existing calendar event. Check availability and select another slot.',
               run.scenarioId === 'slot-conflict',
             );
+          } else if (
+            run.scenarioId === 'slot-race' &&
+            !run.events.some((event) => event.source === 'concurrent')
+          ) {
+            const competing: CalendarEvent = {
+              id: randomUUID(),
+              title: 'Last-minute booking',
+              start: validated.start,
+              end: validated.end,
+              attendees: ['colleague@example.test'],
+              source: 'concurrent',
+            };
+            run.events.push(competing);
+            run.events.sort(
+              (a, b) =>
+                Date.parse(a.start) - Date.parse(b.start) ||
+                a.id.localeCompare(b.id),
+            );
+            sideEffect = `A competing booking “${competing.title}” (${competing.id}) took ${competing.start}. The requested event was not created.`;
+            result = error(
+              'CONFLICT',
+              'The requested time overlaps an existing calendar event. Check availability and select another slot.',
+              true,
+            );
           } else {
             const event: CalendarEvent = {
               id: randomUUID(),
@@ -494,10 +518,26 @@ export class RehearsalEngine {
     try {
       let start = Date.parse(scenario.target.windowStart);
       const duration = scenario.target.durationMinutes * 60_000;
-      if (run.policy === 'careful') {
-        const listed = await call('calendar_list_events', {});
-        if (!listed.ok) return this.finishRun(id);
-        const events = (listed.data as { events: CalendarEvent[] }).events;
+      const makeInput = (): CreateEventInput => ({
+        title: scenario.target.title,
+        attendees: [...scenario.target.attendees],
+        start: new Date(start).toISOString(),
+        end: new Date(start + duration).toISOString(),
+      });
+      if (run.policy === 'naive') {
+        const input = makeInput();
+        const created = await call('calendar_create_event', { ...input });
+        if (!created.ok) await call('calendar_create_event', { ...input });
+        return this.finishRun(id);
+      }
+
+      const listed = await call('calendar_list_events', {});
+      if (!listed.ok) return this.finishRun(id);
+      let events = (listed.data as { events: CalendarEvent[] }).events;
+      // Availability can change between a read and a write. Replan from fresh
+      // reads, but keep a finite retry budget even if conflicts keep arriving.
+      const maxCreateAttempts = 3;
+      for (let attempt = 0; attempt < maxCreateAttempts; attempt++) {
         while (
           start + duration <= Date.parse(scenario.target.windowEnd) &&
           events.some((event) =>
@@ -508,31 +548,21 @@ export class RehearsalEngine {
           )
         )
           start += duration;
-        if (start + duration > Date.parse(scenario.target.windowEnd))
-          return this.finishRun(id);
-      }
-      const input: CreateEventInput = {
-        title: scenario.target.title,
-        attendees: [...scenario.target.attendees],
-        start: new Date(start).toISOString(),
-        end: new Date(start + duration).toISOString(),
-      };
-      const created = await call('calendar_create_event', { ...input });
-      if (!created.ok && run.policy === 'naive') {
-        await call('calendar_create_event', { ...input });
-      } else if (
-        created.error?.code === 'TIMEOUT' &&
-        run.policy === 'careful'
-      ) {
-        const listed = await call('calendar_list_events', {});
+        if (start + duration > Date.parse(scenario.target.windowEnd)) break;
+        const input = makeInput();
+        const created = await call('calendar_create_event', { ...input });
+        if (created.ok) break;
+        const code = created.error?.code;
+        if (code !== 'TIMEOUT' && code !== 'CONFLICT') break;
+        if (code === 'CONFLICT' && attempt === maxCreateAttempts - 1) break;
+        const refreshed = await call('calendar_list_events', {});
+        if (!refreshed.ok) break;
+        events = (refreshed.data as { events: CalendarEvent[] }).events;
         if (
-          listed.ok &&
-          !(listed.data as { events: CalendarEvent[] }).events.some((event) =>
-            sameEvent(event, input),
-          )
-        ) {
-          await call('calendar_create_event', { ...input });
-        }
+          code === 'TIMEOUT' &&
+          events.some((event) => sameEvent(event, input))
+        )
+          break;
       }
       return this.finishRun(id);
     } finally {

@@ -54,7 +54,7 @@ Open [localhost:4173](http://localhost:4173).
 
 ## What is included
 
-- Four calendar scenarios with an isolated state for every run.
+- Five calendar scenarios with an isolated state for every run.
 - A visual calendar and expandable tool-call timeline, including evidence of committed writes.
 - Outcome checks against resulting calendar state, rather than an agent's success claim.
 - Side-by-side comparison of the two demo policies.
@@ -67,8 +67,15 @@ Open [localhost:4173](http://localhost:4173).
 | `timeout-after-write` | The first successful create commits the event, then returns a timeout. The fixture permits exact repeats of that write to demonstrate duplication; unrelated overlaps are rejected. |
 | `permission-denied`   | Calendar reads work; writes return a permission error.                                                                                                                              |
 | `slot-conflict`       | An existing event occupies the initially requested slot.                                                                                                                            |
+| `slot-race`           | A competing booking takes a free slot during the first valid, nonconflicting create attempt. The requested create returns `CONFLICT`.                                               |
 
 All scenarios use a fixed **22 October 2026, UTC** fixture. This is simulated time, independent of the machine's current date. The scheduling task concerns a 30-minute Design review with `sarah@example.test` during the configured afternoon window.
+
+### Try a booking race
+
+Select **Someone got there first** (`slot-race`, labeled **Booking race**) and choose **Compare**. The requested slot starts free, but a competing booking appears when the agent first tries to create its event. The blind retry policy repeats the occupied slot and fails. The verify before retry policy refreshes availability and makes a bounded attempt to find another slot within the task window.
+
+This fault inserts one competing event per run, marked `concurrent` in the trace data. The requested write fails, yet the calendar has changed. No idempotency key is reserved for that failed write. Idempotency can prevent duplicate writes; it cannot reserve a slot or guarantee that previously read availability still holds.
 
 ## Connect an agent
 
@@ -121,7 +128,7 @@ Event timestamps use UTC ISO strings, such as `2026-10-22T14:00:00Z`. Finishing 
 
 The agent sees tool responses, not the developer dashboard's hidden write evidence. There is no live MCP run-inspection tool that would reveal whether a timed-out write committed; the agent must reconcile through the simulated calendar tools.
 
-Optional idempotency keys let agents exercise another recovery strategy. Repeating the same key and event reuses the original write; reusing a key with a different event is rejected.
+Optional idempotency keys let agents exercise another recovery strategy. Once an event is committed, repeating the same key and event reuses the original write; reusing that key with a different event is rejected. A rejected create that commits no requested event does not reserve its key.
 
 Example prompt for your agent:
 
